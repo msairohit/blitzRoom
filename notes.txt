@@ -1,0 +1,7 @@
+test truth or dare, its not working after latest changes.
+add more questions to truth or dare (atleast 100 each) by searching the net.
+add more party multiplayer games.
+why there is still data in table when anonymous users logged in?
+add authentication functionality.
+check if its getting stored properly or not (new category in quiz and previous games)
+dashboard kind of thing for the player in profile section or somewhere to show all the previous game details.

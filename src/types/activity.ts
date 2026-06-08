@@ -35,6 +35,17 @@ export interface ActivityGameProps {
   broadcastEvent: (event: GameEvent) => void;
   /** Subscribe to game events from other players */
   onGameEvent: (callback: (event: GameEvent) => void) => () => void;
+  /**
+   * Write real-time game state (fast path via RTDB WebSocket, ~50–150ms).
+   * Prefer this over updateSettings for in-game state that changes frequently.
+   */
+  syncGameState?: (state: Record<string, unknown>) => void;
+  /**
+   * Subscribe to real-time game state from RTDB.
+   * Callback fires immediately with current state, then on every change.
+   * Returns an unsubscribe function.
+   */
+  onGameState?: (callback: (state: Record<string, unknown>) => void) => () => void;
 }
 
 /** Results when an activity finishes */

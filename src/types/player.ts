@@ -40,6 +40,8 @@ export interface Player {
   joinedAt: number;
   /** Whether this player is the room admin */
   isAdmin: boolean;
+  /** Whether this player has finished the active game/activity */
+  isDone?: boolean;
 }
 
 export interface PlayerJoinPayload {

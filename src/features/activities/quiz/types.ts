@@ -9,14 +9,15 @@ export interface QuizSettings {
   difficulty: QuizDifficulty;
 }
 
-export type QuizCategory =
-  | 'general'
-  | 'science'
-  | 'history'
-  | 'geography'
-  | 'entertainment'
-  | 'sports'
-  | 'technology';
+export type QuizCategory = string;
+
+export interface CustomQuiz {
+  id: string;
+  name: string;
+  emoji: string;
+  questions: QuizQuestion[];
+  createdAt: number;
+}
 
 export type QuizDifficulty = 'easy' | 'medium' | 'hard';
 

@@ -9,6 +9,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { generateDisplayName } from '@/src/utils/nameGenerator';
 import { AVATAR_COLORS } from '@/src/types/player';
 
+import { auth } from '@/src/services/firebase';
+import { signInAnonymously } from 'firebase/auth';
+
 const USER_STORAGE_KEY = '@blitzroom/user';
 
 interface UserState {
@@ -47,18 +50,46 @@ export const useUserStore = create<UserState>((set, get) => ({
 
   initialize: async () => {
     try {
+      // Sign in anonymously with Firebase Auth
+      const userCredential = await signInAnonymously(auth);
+      const fbUid = userCredential.user.uid;
+
+      const saved = await AsyncStorage.getItem(USER_STORAGE_KEY);
+      let displayName = generateDisplayName();
+      let avatarColor = randomAvatarColor();
+
+      if (saved) {
+        const data = JSON.parse(saved);
+        displayName = data.displayName || displayName;
+        avatarColor = data.avatarColor || avatarColor;
+      }
+
+      const userObj = {
+        userId: fbUid,
+        displayName,
+        avatarColor,
+      };
+
+      await AsyncStorage.setItem(USER_STORAGE_KEY, JSON.stringify(userObj));
+      set({
+        ...userObj,
+        isAuthenticated: true,
+        isInitialized: true,
+      });
+    } catch (error) {
+      console.warn('[UserStore] Firebase Auth initialization failed, using local fallback:', error);
+      // Fallback: generate a temporary identity
       const saved = await AsyncStorage.getItem(USER_STORAGE_KEY);
       if (saved) {
         const data = JSON.parse(saved);
         set({
-          userId: data.userId,
-          displayName: data.displayName,
-          avatarColor: data.avatarColor,
-          isAuthenticated: false, // Anonymous for now
+          userId: data.userId || generateUserId(),
+          displayName: data.displayName || generateDisplayName(),
+          avatarColor: data.avatarColor || randomAvatarColor(),
+          isAuthenticated: false,
           isInitialized: true,
         });
       } else {
-        // First launch — generate anonymous identity
         const newUser = {
           userId: generateUserId(),
           displayName: generateDisplayName(),
@@ -71,15 +102,6 @@ export const useUserStore = create<UserState>((set, get) => ({
           isInitialized: true,
         });
       }
-    } catch {
-      // Fallback: generate a temporary identity
-      set({
-        userId: generateUserId(),
-        displayName: generateDisplayName(),
-        avatarColor: randomAvatarColor(),
-        isAuthenticated: false,
-        isInitialized: true,
-      });
     }
   },
 
@@ -94,7 +116,9 @@ export const useUserStore = create<UserState>((set, get) => ({
         displayName: name,
         avatarColor: state.avatarColor,
       })
-    );
+    ).catch((error) => {
+      console.warn('[UserStore] Failed to save display name:', error);
+    });
   },
 
   setAvatarColor: (color: string) => {
@@ -107,7 +131,9 @@ export const useUserStore = create<UserState>((set, get) => ({
         displayName: state.displayName,
         avatarColor: color,
       })
-    );
+    ).catch((error) => {
+      console.warn('[UserStore] Failed to save avatar color:', error);
+    });
   },
 
   generateNewIdentity: () => {
@@ -117,6 +143,8 @@ export const useUserStore = create<UserState>((set, get) => ({
       avatarColor: randomAvatarColor(),
     };
     set(newUser);
-    AsyncStorage.setItem(USER_STORAGE_KEY, JSON.stringify(newUser));
+    AsyncStorage.setItem(USER_STORAGE_KEY, JSON.stringify(newUser)).catch((error) => {
+      console.warn('[UserStore] Failed to save new identity:', error);
+    });
   },
 }));

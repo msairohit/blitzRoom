@@ -223,157 +223,60 @@ BlitzRoom/
 
 ## Proposed Changes — Phased Implementation
 
-### Phase 1: Project Scaffolding & Design System
+### Phase 1: Project Scaffolding & Design System [x]
 
-#### [NEW] Project initialization
-- Scaffold Expo project with `npx create-expo-app@latest`
-- Configure TypeScript, Expo Router, and platform targets (Android + Web)
-- Install core dependencies: `zustand`, `react-native-reanimated`, `@expo/vector-icons`, `expo-haptics`, `expo-clipboard`, `expo-sharing`
-
-#### [NEW] [app.json](file:///d:/my_projects/react_native_projects/BlitzRoom/app.json)
-- Configure `scheme: "blitzroom"`, platforms, splash screen, icons
-
-#### [NEW] Theme system (`src/theme/`)
-- Dark-mode-first design with vibrant accent colors
-- Color palette: Deep navy backgrounds, electric purple/cyan accents, glassmorphism cards
-- Typography: Inter font family (clean, modern)
-- Spacing scale: 4px base unit
-- Reusable shadow/elevation tokens
+- [x] **Project initialization**: Scaffolded Expo project, configured TypeScript, Expo Router, and platform targets. Installed core dependencies (`zustand`, `react-native-reanimated`, `@expo/vector-icons`, `expo-haptics`, `expo-clipboard`, `expo-sharing`).
+- [x] **[app.json](file:///d:/my_projects/react_native_projects/BlitzRoom/app.json)**: Configured scheme, platforms, splash screen, icons.
+- [x] **Theme system (`src/theme/`)**: Dark-mode-first design, color palette, typography (Inter), and spacing scale.
 
 ---
 
-### Phase 2: Core Screens & Navigation
+### Phase 2: Core Screens & Navigation [x]
 
-#### [NEW] [app/_layout.tsx](file:///d:/my_projects/react_native_projects/BlitzRoom/app/_layout.tsx)
-- Root layout with theme provider, safe area, and global providers
-
-#### [NEW] [app/index.tsx](file:///d:/my_projects/react_native_projects/BlitzRoom/app/index.tsx) — Home Screen
-- Animated hero section with app logo/branding
-- Two primary CTAs: **"Create Room"** and **"Join Room"**
-- Room code input for quick join
-- Recent rooms list (if persistence is enabled)
-
-#### [NEW] [app/create/index.tsx](file:///d:/my_projects/react_native_projects/BlitzRoom/app/create/index.tsx) — Activity Picker
-- Grid of available activities (quiz, truth-or-dare, more coming)
-- Each activity card shows: icon, name, player count, brief description
-- Smooth enter/press animations
-
-#### [NEW] [app/create/[activity].tsx](file:///d:/my_projects/react_native_projects/BlitzRoom/app/create/%5Bactivity%5D.tsx) — Activity Settings
-- Dynamic settings form based on selected activity
-- Activity-specific configuration (e.g., quiz category, number of questions, time limit)
-- "Create Room" button → generates room code and navigates to lobby
-
-#### [NEW] [app/join/index.tsx](file:///d:/my_projects/react_native_projects/BlitzRoom/app/join/index.tsx) — Join Room
-- Large room code input (6 characters, auto-uppercase)
-- Paste from clipboard support
-- Visual feedback on valid/invalid codes
-
-#### [NEW] [app/room/[code].tsx](file:///d:/my_projects/react_native_projects/BlitzRoom/app/room/%5Bcode%5D.tsx) — Room Lobby
-- Real-time player list with avatars and ready status
-- Room code display with copy/share buttons
-- Admin controls: kick player, start activity, change settings
-- Player controls: toggle ready, leave room
-- Animated player join/leave effects
-
-#### [NEW] [app/play/[roomId].tsx](file:///d:/my_projects/react_native_projects/BlitzRoom/app/play/%5BroomId%5D.tsx) — Activity Play Screen
-- Renders the appropriate activity component based on room's activityType
-- Full-screen game/quiz experience
-- Real-time score updates
-- End screen with results and rankings
+- [x] **[app/_layout.tsx](file:///d:/my_projects/react_native_projects/BlitzRoom/app/_layout.tsx)**: Root layout with theme provider and stack navigator.
+- [x] **[app/index.tsx](file:///d:/my_projects/react_native_projects/BlitzRoom/app/index.tsx)**: Home Screen with profile customizer and CTAs.
+- [x] **[app/create/index.tsx](file:///d:/my_projects/react_native_projects/BlitzRoom/app/create/index.tsx)**: Activity Picker listing available activities.
+- [x] **[app/create/[activity].tsx](file:///d:/my_projects/react_native_projects/BlitzRoom/app/create/%5Bactivity%5D.tsx)**: Dynamic activity settings form.
+- [x] **[app/join/index.tsx](file:///d:/my_projects/react_native_projects/BlitzRoom/app/join/index.tsx)**: Join Room screen with code input formatting.
+- [x] **[app/room/[code].tsx](file:///d:/my_projects/react_native_projects/BlitzRoom/app/room/%5Bcode%5D.tsx)**: Lobby waiting room with copy/share buttons, player cards, ready status.
+- [x] **[app/play/[roomId].tsx](file:///d:/my_projects/react_native_projects/BlitzRoom/app/play/%5BroomId%5D.tsx)**: Game component runtime mount.
 
 ---
 
-### Phase 3: Backend Integration
+### Phase 3: Backend Integration & Local Fallback [ ]
 
-#### [NEW] Firebase setup (`src/services/firebase.ts`)
-- Initialize Firebase app with environment config
-- Export Firestore, Auth, and Realtime DB instances
-- Web-compatible initialization (Firebase JS SDK for cross-platform)
-
-#### [NEW] Auth flow (`src/features/user/`)
-- Anonymous auth on first launch (zero friction)
-- Display name prompt (fun username generator as default)
-- Avatar color auto-assignment
-- Persistent user ID across sessions
-
-#### [NEW] Room service (`src/services/roomService.ts`)
-- `createRoom(activityType, settings)` → generates unique code, creates Firestore doc
-- `joinRoom(code, player)` → validates code, adds player to subcollection
-- `leaveRoom(roomId, playerId)` → removes player, handles admin transfer
-- `startActivity(roomId)` → validates all ready, transitions room status
-- `endActivity(roomId, results)` → saves scores, transitions to finished
-
-#### [NEW] Real-time subscriptions (`src/services/realtimeService.ts`)
-- `subscribeToRoom(roomId)` → `onSnapshot` for room meta
-- `subscribeToPlayers(roomId)` → `onSnapshot` on players subcollection
-- `subscribeToGameState(roomId)` → Realtime DB listener for high-freq game events
-- Proper cleanup on unmount to prevent memory leaks
+- [x] **Firebase setup (`src/services/firebase.ts`)**: Initialize Firebase SDK client-side.
+- [ ] **Auth flow (`src/features/user/`)**: Connect anonymous Firebase authentication.
+- [ ] **Robust Local Fallback**:
+  - Implement a fallback in `roomService.ts` that automatically switches to a fully functional in-memory database when Firebase Auth initialization fails (i.e. `isAuthenticated` is false).
+  - This prevents the app from hanging on the "Creating room lobby..." screen when the Firebase console is not fully configured (e.g. Anonymous Auth is disabled).
+  - Simulate real-time updates for rooms, players, and events in local fallback mode.
+- [ ] **Real-time subscriptions (`src/services/realtimeService.ts`)**: Implement live Firestore listeners for rooms, players, and game state events.
 
 ---
 
-### Phase 4: Activity Plugin System
+### Phase 4: Activity Plugin System [x]
 
-#### [NEW] Activity registry (`src/features/activities/registry.ts`)
-- Central registry mapping activity IDs to their components and config
-- Simple pattern to add new activities:
-  ```typescript
-  // To add a new activity, just add an entry here:
-  export const ACTIVITY_REGISTRY: Record<string, ActivityDefinition> = {
-    quiz: { ... },
-    'truth-or-dare': { ... },
-    // Add more here!
-  };
-  ```
-
-#### [NEW] Activity interface (`src/features/activities/types.ts`)
-```typescript
-interface ActivityDefinition {
-  id: string;
-  name: string;
-  description: string;
-  icon: string;
-  minPlayers: number;
-  maxPlayers: number;
-  SettingsComponent: React.ComponentType<SettingsProps>;
-  GameComponent: React.ComponentType<GameProps>;
-  defaultSettings: Record<string, any>;
-}
-```
-
-#### [NEW] Quiz activity (`src/features/activities/quiz/`)
-- Settings: category, number of questions, time per question
-- Gameplay: Question display → countdown timer → answer selection → reveal → scores
-- Scoring: Points for correct answers, bonus for speed
-
-#### [NEW] Truth or Dare activity (`src/features/activities/truth-or-dare/`)
-- Settings: categories (funny, spicy, wholesome), custom prompts
-- Gameplay: Spin-the-wheel style player selection → truth/dare choice → prompt display
-- Turn-based progression
+- [x] **Activity registry (`src/features/activities/registry.ts`)**: registry mapping activity IDs to their components.
+- [x] **Activity interface (`src/features/activities/types.ts`)**: type definition for plugins.
+- [x] **Quiz activity (`src/features/activities/quiz/`)**: Settings component, gameplay component, timer, score logic.
+- [x] **Truth or Dare activity (`src/features/activities/truth-or-dare/`)**: Settings component, game state, categories.
 
 ---
 
-### Phase 5: Deep Linking & Sharing
+### Phase 5: Deep Linking & Sharing [x]
 
-#### [NEW] Deep link configuration
-- URL scheme: `blitzroom://room/{code}`
-- Web URL: `https://blitzroom.web.app/room/{code}` (Firebase Hosting)
-- Android App Links with `assetlinks.json`
-
-#### [NEW] Share functionality (`src/features/room/components/ShareRoom.tsx`)
-- Native share sheet with room link
-- Copy room code to clipboard
-- QR code generation for in-person sharing (stretch goal)
+- [x] **Deep link configuration**: Configured app scheme `blitzroom://`.
+- [x] **Share functionality**: Share invitation messages with deep links and copy to clipboard.
 
 ---
 
-### Phase 6: Polish & Premium Feel
+### Phase 6: Polish & Premium Feel [x]
 
-- **Animations**: Page transitions, player join effects, countdown timers, score reveals
-- **Haptics**: Feedback on button presses, correct/wrong answers, turn changes
-- **Sound effects**: Join/leave sounds, countdown beeps, victory fanfare (optional, toggleable)
-- **Error handling**: Network loss recovery, room-not-found states, player disconnection handling
-- **Loading states**: Skeleton screens, shimmer effects
-- **Empty states**: Illustrated empty states for no rooms, waiting for players
+- [x] **Animations**: Page transitions, status updates.
+- [x] **Haptics**: Button press, error, and success feedback.
+- [x] **Error handling**: Handle room not found, invalid codes, or empty fields.
+- [x] **Local DB Hot Reload persistence**: Added global object binding in `roomService.ts` to prevent hot reloads from wiping active lobbies.
 
 ---
 

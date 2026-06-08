@@ -34,16 +34,22 @@ export function BlitzThemeProvider({ children }: ThemeProviderProps) {
 
   // Load saved theme on mount
   useEffect(() => {
-    AsyncStorage.getItem(THEME_STORAGE_KEY).then((saved) => {
-      if (saved && saved in themes) {
-        setThemeId(saved as ThemeId);
-      }
-    });
+    AsyncStorage.getItem(THEME_STORAGE_KEY)
+      .then((saved) => {
+        if (saved && saved in themes) {
+          setThemeId(saved as ThemeId);
+        }
+      })
+      .catch((error) => {
+        console.warn('[Theme] Failed to load saved theme:', error);
+      });
   }, []);
 
   const setTheme = useCallback((id: ThemeId) => {
     setThemeId(id);
-    AsyncStorage.setItem(THEME_STORAGE_KEY, id);
+    AsyncStorage.setItem(THEME_STORAGE_KEY, id).catch((error) => {
+      console.warn('[Theme] Failed to save theme:', error);
+    });
   }, []);
 
   const value: ThemeContextType = {
@@ -58,11 +64,7 @@ export function BlitzThemeProvider({ children }: ThemeProviderProps) {
     hitSlop,
   };
 
-  return (
-    <ThemeContext.Provider value={value}>
-      {children}
-    </ThemeContext.Provider>
-  );
+  return React.createElement(ThemeContext.Provider, { value }, children);
 }
 
 /**
