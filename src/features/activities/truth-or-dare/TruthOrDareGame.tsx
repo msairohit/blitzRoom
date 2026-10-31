@@ -390,7 +390,7 @@ export function TruthOrDareGame({
   // ---- Next Turn ----
   const nextTurn = useCallback(() => {
     const newRound = roundCount + 1;
-    if (maxRounds > 0 && newRound >= maxRounds) {
+    if (maxRounds > 0 && newRound > maxRounds) {
       setPhase('finished');
       pushState({
         phase: 'finished',

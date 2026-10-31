@@ -116,7 +116,7 @@ export default function RoomLobbyScreen() {
       return;
     }
 
-    const unreadyPlayers = players.filter((p) => !p.isReady);
+    const unreadyPlayers = players.filter((p) => !p.isReady && !p.id.startsWith('bot_') && !p.isOffline);
     if (unreadyPlayers.length > 0) {
       haptics.warning();
       alert('Waiting for all players to be Ready!');

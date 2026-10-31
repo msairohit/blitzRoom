@@ -47,6 +47,15 @@ export function QuizGame({
     return shuffled.slice(0, Math.min(numberOfQuestions, shuffled.length));
   });
 
+  const [roundPointsAwarded, setRoundPointsAwarded] = useState<{
+    points: number;
+    base: number;
+    bonus: number;
+    timeRemainingSec: number;
+    isCorrect: boolean;
+  } | null>(null);
+
+  const questionStartTimeRef = useRef<number>(Date.now());
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pulseAnim = useRef(new RNAnimated.Value(1)).current;
   const hasSavedHistory = useRef(false);
@@ -61,6 +70,8 @@ export function QuizGame({
       setCountdownValue((prev) => {
         if (prev <= 1) {
           clearInterval(interval);
+          questionStartTimeRef.current = Date.now();
+          setTimeLeft(timePerQuestion);
           setPhase('question');
           return 0;
         }
@@ -70,42 +81,50 @@ export function QuizGame({
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [phase]);
+  }, [phase, timePerQuestion]);
 
   // Question timer
   useEffect(() => {
     if (phase !== 'question') return;
 
+    questionStartTimeRef.current = Date.now();
     setTimeLeft(timePerQuestion);
+
     timerRef.current = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          if (timerRef.current) clearInterval(timerRef.current);
-          // Time's up — show reveal
-          setShowCorrect(true);
-          setPhase('reveal');
-          haptics.warning();
-          return 0;
-        }
-        if (prev <= 5) {
-          haptics.light();
-          // Pulse animation for last 5 seconds
-          RNAnimated.sequence([
-            RNAnimated.timing(pulseAnim, {
-              toValue: 1.2,
-              duration: 100,
-              useNativeDriver: true,
-            }),
-            RNAnimated.timing(pulseAnim, {
-              toValue: 1,
-              duration: 100,
-              useNativeDriver: true,
-            }),
-          ]).start();
-        }
-        return prev - 1;
-      });
-    }, 1000);
+      const elapsed = (Date.now() - questionStartTimeRef.current) / 1000;
+      const remaining = Math.max(0, Math.ceil(timePerQuestion - elapsed));
+      setTimeLeft(remaining);
+
+      if (remaining <= 0) {
+        if (timerRef.current) clearInterval(timerRef.current);
+        // Time's up — show reveal
+        setRoundPointsAwarded({
+          points: 0,
+          base: 0,
+          bonus: 0,
+          timeRemainingSec: 0,
+          isCorrect: false,
+        });
+        setShowCorrect(true);
+        setPhase('reveal');
+        haptics.warning();
+      } else if (remaining <= 5) {
+        haptics.light();
+        // Pulse animation for last 5 seconds
+        RNAnimated.sequence([
+          RNAnimated.timing(pulseAnim, {
+            toValue: 1.2,
+            duration: 100,
+            useNativeDriver: true,
+          }),
+          RNAnimated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 100,
+            useNativeDriver: true,
+          }),
+        ]).start();
+      }
+    }, 250);
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -118,9 +137,12 @@ export function QuizGame({
 
     const timeout = setTimeout(() => {
       if (currentQuestionIndex < questions.length - 1) {
-        setCurrentQuestionIndex((prev) => prev + 1);
+        setTimeLeft(timePerQuestion);
         setSelectedAnswer(null);
         setShowCorrect(false);
+        setRoundPointsAwarded(null);
+        questionStartTimeRef.current = Date.now();
+        setCurrentQuestionIndex((prev) => prev + 1);
         setPhase('question');
       } else {
         setPhase('finished');
@@ -130,7 +152,7 @@ export function QuizGame({
     }, 2500);
 
     return () => clearTimeout(timeout);
-  }, [phase, currentQuestionIndex, questions.length, roomId, currentPlayerId]);
+  }, [phase, currentQuestionIndex, questions.length, roomId, currentPlayerId, timePerQuestion]);
 
   // Simulated Bots Loop (Runs only on Admin client)
   useEffect(() => {
@@ -139,18 +161,24 @@ export function QuizGame({
     const bots = players.filter((p) => p.id.startsWith('bot_') && !p.isDone);
     if (bots.length === 0) return;
 
+    const questionStart = questionStartTimeRef.current;
+
     const timers = bots.map((bot) => {
-      // Simulate bot taking random time to answer between 3 and 10 seconds
-      const delay = 3000 + Math.random() * 7000;
+      // Simulate bot taking realistic time scaled to timePerQuestion (between 20% and 80% of duration)
+      const minDelay = Math.max(1500, timePerQuestion * 1000 * 0.2);
+      const maxDelay = Math.max(minDelay + 1000, timePerQuestion * 1000 * 0.8);
+      const delay = minDelay + Math.random() * (maxDelay - minDelay);
+
       return setTimeout(() => {
         const isCorrect = Math.random() < 0.7; // 70% accuracy
         if (isCorrect) {
-          const elapsedSec = delay / 1000;
-          const botTimeLeft = Math.max(1, timePerQuestion - elapsedSec);
+          const elapsedSec = (Date.now() - questionStart) / 1000;
+          const botTimeLeft = Math.max(0, timePerQuestion - elapsedSec);
           const timeBonus = Math.round((botTimeLeft / timePerQuestion) * 100);
           const points = 100 + timeBonus;
-          const newScore = (bot.score || 0) + points;
-          roomService.updatePlayer(roomId, bot.id, { score: newScore }).catch(console.error);
+          // Use the service's additive score update (server read-then-add) to avoid
+          // stale closure issues when multiple question timers overlap
+          roomService.updatePlayerScore(roomId, bot.id, points).catch(console.error);
         }
       }, delay);
     });
@@ -207,22 +235,36 @@ export function QuizGame({
       setSelectedAnswer(index);
       if (timerRef.current) clearInterval(timerRef.current);
 
+      const elapsedSec = (Date.now() - questionStartTimeRef.current) / 1000;
+      const remainingSec = Math.max(0, timePerQuestion - elapsedSec);
       const isCorrect = index === currentQuestion.correctIndex;
+
+      let roundScore = 0;
+      let timeBonus = 0;
+
       if (isCorrect) {
-        // Score: base 100 + time bonus
-        const timeBonus = Math.round((timeLeft / timePerQuestion) * 100);
-        const roundScore = 100 + timeBonus;
-        // Submit score to database immediately
-        roomService.submitScore(roomId, roundScore).catch(console.error);
+        // Score: base 100 + time bonus (0-100 proportional to exact time remaining)
+        timeBonus = Math.round((remainingSec / timePerQuestion) * 100);
+        roundScore = 100 + timeBonus;
+        // Submit score to database immediately for current player
+        roomService.updatePlayerScore(roomId, currentPlayerId, roundScore).catch(console.error);
         haptics.success();
       } else {
         haptics.error();
       }
 
+      setRoundPointsAwarded({
+        points: roundScore,
+        base: isCorrect ? 100 : 0,
+        bonus: isCorrect ? timeBonus : 0,
+        timeRemainingSec: Math.round(remainingSec * 10) / 10,
+        isCorrect,
+      });
+
       setShowCorrect(true);
       setTimeout(() => setPhase('reveal'), 500);
     },
-    [selectedAnswer, phase, currentQuestion, timeLeft, timePerQuestion, roomId]
+    [selectedAnswer, phase, currentQuestion, timePerQuestion, roomId, currentPlayerId]
   );
 
   const handleFinish = useCallback(() => {
@@ -433,6 +475,47 @@ export function QuizGame({
         </Text>
       </View>
 
+      {/* Feedback Banner during reveal */}
+      {showCorrect && roundPointsAwarded && (
+        <View
+          style={[
+            styles.feedbackBanner,
+            {
+              backgroundColor: roundPointsAwarded.isCorrect
+                ? 'rgba(52, 211, 153, 0.15)'
+                : 'rgba(248, 113, 113, 0.15)',
+              borderColor: roundPointsAwarded.isCorrect ? colors.success : colors.error,
+              borderRadius: radius.md,
+              paddingVertical: spacing.sm,
+              paddingHorizontal: spacing.md,
+              marginHorizontal: spacing.lg,
+              alignItems: 'center',
+            },
+          ]}
+        >
+          <Text
+            style={[
+              typography.titleMedium,
+              {
+                color: roundPointsAwarded.isCorrect ? colors.success : colors.error,
+                fontWeight: 'bold',
+              },
+            ]}
+          >
+            {roundPointsAwarded.isCorrect
+              ? `+${roundPointsAwarded.points} Points!`
+              : selectedAnswer !== null
+              ? '❌ Incorrect (+0 pts)'
+              : "⏰ Time's Up! (+0 pts)"}
+          </Text>
+          {roundPointsAwarded.isCorrect && (
+            <Text style={[typography.bodySmall, { color: colors.textSecondary, marginTop: 2 }]}>
+              Base: 100  •  Speed bonus: +{roundPointsAwarded.bonus} ({roundPointsAwarded.timeRemainingSec}s left)
+            </Text>
+          )}
+        </View>
+      )}
+
       {/* Options */}
       <View style={[styles.optionsSection, { padding: spacing.lg, gap: spacing.md }]}>
         {currentQuestion.options.map((option, index) => {
@@ -599,5 +682,8 @@ const styles = StyleSheet.create({
   },
   finishButton: {
     alignItems: 'center',
+  },
+  feedbackBanner: {
+    borderWidth: 1,
   },
 });

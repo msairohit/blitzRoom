@@ -8,6 +8,7 @@ import type { Room, RoomStatus } from '@/src/types/room';
 import type { Player } from '@/src/types/player';
 import type { GameEvent } from '@/src/types/activity';
 import { useUserStore } from '@/src/features/user/userStore';
+import { useRoomStore } from '@/src/features/room/roomStore';
 
 import { db, rtdb } from './firebase';
 import {
@@ -22,8 +23,9 @@ import {
   where,
   onSnapshot,
   writeBatch,
+  increment,
 } from 'firebase/firestore';
-import { ref, set, push, onValue, off, remove, onDisconnect } from 'firebase/database';
+import { ref, set, push, onValue, remove, onDisconnect } from 'firebase/database';
 
 interface InMemoryRoomState {
   room: Room;
@@ -527,10 +529,7 @@ class LocalDatabase {
     if (this.isFirebaseEnabled()) {
       try {
         const playerRef = doc(db, 'rooms', roomId, 'players', playerId);
-        const playerSnap = await getDoc(playerRef);
-        if (!playerSnap.exists()) return;
-        const player = playerSnap.data() as Player;
-        await updateDoc(playerRef, { score: player.score + score });
+        await updateDoc(playerRef, { score: increment(score) });
         return;
       } catch (error) {
         this.handleFirestoreError(error);
@@ -541,7 +540,7 @@ class LocalDatabase {
     if (!state) return;
     const player = state.players.get(playerId);
     if (!player) return;
-    player.score += score;
+    player.score = (player.score ?? 0) + score;
 
     triggerListener(`players_${roomId}`, Array.from(state.players.values()).sort((a, b) => a.joinedAt - b.joinedAt));
   }
@@ -596,8 +595,9 @@ class LocalDatabase {
         callback(snapshot.data() as Room);
       }
     }, (error) => {
-      console.warn('[LocalDatabase] subscribeToRoom Firestore error:', error);
+      // Disable Firebase FIRST, then set up local fallback to avoid infinite error loop
       this.handleFirestoreError(error);
+      console.warn('[LocalDatabase] subscribeToRoom Firestore error:', error);
       if (!unsubscribed) {
         localUnsubscribe = this.subscribeToRoom(roomId, callback);
       }
@@ -679,15 +679,17 @@ class LocalDatabase {
       lastPlayers = playersList;
       triggerCallback();
     }, (error) => {
-      console.warn('[LocalDatabase] subscribeToPlayers Firestore error:', error);
+      // Disable Firebase FIRST, then set up local fallback to avoid infinite error loop
       this.handleFirestoreError(error);
+      console.warn('[LocalDatabase] subscribeToPlayers Firestore error:', error);
       if (!unsubscribed) {
         localUnsubscribe = this.subscribeToPlayers(roomId, callback);
       }
     });
 
     const presenceRef = ref(rtdb, `rooms/${roomId}/presence`);
-    const presenceUnsubscribe = onValue(presenceRef, (snapshot) => {
+    // onValue returns an Unsubscribe function in the modular Firebase SDK
+    const unsubscribePresence = onValue(presenceRef, (snapshot) => {
       presenceMap = snapshot.val() || {};
       triggerCallback();
     }, (error) => {
@@ -697,7 +699,8 @@ class LocalDatabase {
     return () => {
       unsubscribed = true;
       firestoreUnsubscribe();
-      off(presenceRef, 'value', presenceUnsubscribe);
+      // Call the unsubscribe function directly — do NOT use off() with modular SDK
+      unsubscribePresence();
       if (localUnsubscribe) {
         localUnsubscribe();
       }
@@ -723,19 +726,28 @@ class LocalDatabase {
     const roomEventsRef = ref(rtdb, `rooms/${roomId}/events`);
     let unsubscribed = false;
     let localUnsubscribe: (() => void) | null = null;
+    // Track the last delivered event key to avoid re-delivering on reconnect
+    let lastDeliveredKey = '';
 
-    const listener = onValue(roomEventsRef, (snapshot) => {
+    // onValue returns an Unsubscribe function in the modular Firebase SDK
+    const unsubscribeEvents = onValue(roomEventsRef, (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.val();
-        const keys = Object.keys(data);
+        // Firebase push keys are lexicographically time-ordered — sort() is correct
+        const keys = Object.keys(data).sort();
         if (keys.length > 0) {
           const latestKey = keys[keys.length - 1];
-          callback(data[latestKey] as GameEvent);
+          // Guard: don't re-deliver the same event on reconnect
+          if (latestKey !== lastDeliveredKey) {
+            lastDeliveredKey = latestKey;
+            callback(data[latestKey] as GameEvent);
+          }
         }
       }
     }, (error) => {
-      console.warn('[LocalDatabase] subscribeToEvents RTDB error:', error);
+      // Disable Firebase FIRST, then set up local fallback
       this.handleFirestoreError(error);
+      console.warn('[LocalDatabase] subscribeToEvents RTDB error:', error);
       if (!unsubscribed) {
         localUnsubscribe = this.subscribeToEvents(roomId, callback);
       }
@@ -743,7 +755,8 @@ class LocalDatabase {
 
     return () => {
       unsubscribed = true;
-      off(roomEventsRef, 'value', listener);
+      // Call the unsubscribe function directly — do NOT use off() with modular SDK
+      unsubscribeEvents();
       if (localUnsubscribe) {
         localUnsubscribe();
       }
@@ -776,9 +789,9 @@ class LocalDatabase {
   ): () => void {
     if (this.isFirebaseEnabled()) {
       const todRef = ref(rtdb, `rooms/${roomId}/todState`);
-      let unsubscribed = false;
 
-      const listener = onValue(
+      // onValue returns an Unsubscribe function in the modular Firebase SDK
+      const unsubscribeTodState = onValue(
         todRef,
         (snapshot) => {
           if (snapshot.exists()) {
@@ -791,8 +804,8 @@ class LocalDatabase {
       );
 
       return () => {
-        unsubscribed = true;
-        off(todRef, 'value', listener);
+        // Call the unsubscribe function directly — do NOT use off() with modular SDK
+        unsubscribeTodState();
       };
     }
 
@@ -808,53 +821,7 @@ class LocalDatabase {
   }
 
   async spawnBots(roomId: string) {
-    if (this.isFirebaseEnabled()) {
-      try {
-        const bots: Player[] = [
-          {
-            id: 'bot_1',
-            displayName: 'BlitzBot🤖',
-            avatarColor: '#EF4444',
-            isReady: true,
-            score: 0,
-            joinedAt: Date.now(),
-            isAdmin: false,
-          },
-          {
-            id: 'bot_2',
-            displayName: 'SpeedyFox🦊',
-            avatarColor: '#10B981',
-            isReady: true,
-            score: 0,
-            joinedAt: Date.now(),
-            isAdmin: false,
-          },
-        ];
-
-        const roomRef = doc(db, 'rooms', roomId);
-        const roomSnap = await getDoc(roomRef);
-        if (!roomSnap.exists()) return;
-        const room = roomSnap.data() as Room;
-
-        const playersRef = collection(db, 'rooms', roomId, 'players');
-        const playersSnap = await getDocs(playersRef);
-        const currentCount = playersSnap.size;
-
-        for (const bot of bots) {
-          await setDoc(doc(db, 'rooms', roomId, 'players', bot.id), bot);
-        }
-
-        await updateDoc(roomRef, { playerCount: currentCount + bots.length });
-        return;
-      } catch (error) {
-        this.handleFirestoreError(error);
-      }
-    }
-
-    const state = localRooms.get(roomId);
-    if (!state) return;
-
-    const bots: Player[] = [
+    const ALL_BOTS: Player[] = [
       {
         id: 'bot_1',
         displayName: 'BlitzBot🤖',
@@ -875,7 +842,42 @@ class LocalDatabase {
       },
     ];
 
-    for (const bot of bots) {
+    if (this.isFirebaseEnabled()) {
+      try {
+        const roomRef = doc(db, 'rooms', roomId);
+        const roomSnap = await getDoc(roomRef);
+        if (!roomSnap.exists()) return;
+        const room = roomSnap.data() as Room;
+
+        const playersRef = collection(db, 'rooms', roomId, 'players');
+        const playersSnap = await getDocs(playersRef);
+        const currentCount = playersSnap.size;
+
+        // Respect maxPlayers — only add as many bots as there are available slots
+        const availableSlots = room.maxPlayers - currentCount;
+        if (availableSlots <= 0) return;
+        const botsToAdd = ALL_BOTS.slice(0, availableSlots);
+
+        for (const bot of botsToAdd) {
+          await setDoc(doc(db, 'rooms', roomId, 'players', bot.id), bot);
+        }
+
+        await updateDoc(roomRef, { playerCount: currentCount + botsToAdd.length });
+        return;
+      } catch (error) {
+        this.handleFirestoreError(error);
+      }
+    }
+
+    const state = localRooms.get(roomId);
+    if (!state) return;
+
+    // Respect maxPlayers in local mode too
+    const availableSlots = state.room.maxPlayers - state.players.size;
+    if (availableSlots <= 0) return;
+    const botsToAdd = ALL_BOTS.slice(0, availableSlots);
+
+    for (const bot of botsToAdd) {
       state.players.set(bot.id, bot);
     }
 
@@ -955,6 +957,14 @@ export const roomService = {
     const user = useUserStore.getState();
     if (!user.userId) return;
     await roomDatabase.updatePlayerScore(roomId, user.userId, score);
+  },
+
+  /**
+   * Additively update a specific player's score by player ID.
+   * Used by admin for bot score management. Uses server-side read-then-add.
+   */
+  updatePlayerScore: async (roomId: string, playerId: string, score: number): Promise<void> => {
+    await roomDatabase.updatePlayerScore(roomId, playerId, score);
   },
 
   updatePlayer: async (roomId: string, playerId: string, updates: Partial<Player>): Promise<void> => {
