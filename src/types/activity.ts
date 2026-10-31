@@ -46,6 +46,14 @@ export interface ActivityGameProps {
    * Returns an unsubscribe function.
    */
   onGameState?: (callback: (state: Record<string, unknown>) => void) => () => void;
+  /**
+   * Write private player state (visible only to target player via rooms/{roomId}/private/{targetPlayerId}).
+   */
+  syncPrivateState?: (targetPlayerId: string, state: Record<string, unknown>) => void;
+  /**
+   * Subscribe to current player's private state from RTDB.
+   */
+  onPrivateState?: (callback: (state: Record<string, unknown>) => void) => () => void;
 }
 
 /** Results when an activity finishes */
@@ -90,7 +98,7 @@ export interface ActivityDefinition {
   /** Default settings for this activity */
   defaultSettings: Record<string, unknown>;
   /** Category for grouping in the picker */
-  category: 'game' | 'social' | 'trivia' | 'party';
+  category: 'game' | 'social' | 'trivia' | 'party' | 'physical' | 'reaction' | 'deduction';
   /** Estimated duration label */
   estimatedDuration: string;
 }

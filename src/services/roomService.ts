@@ -55,6 +55,30 @@ function triggerListener(key: string, data: any) {
   }
 }
 
+/**
+ * Recursively removes `undefined` values and converts undefined array entries to `null`
+ * so Firebase RTDB and Firestore do not throw synchronous
+ * "value argument contains undefined" or invalid data errors.
+ */
+function sanitizeForFirebase<T>(data: T): T {
+  if (data === undefined) {
+    return null as unknown as T;
+  }
+  if (data === null || typeof data !== 'object') {
+    return data;
+  }
+  if (Array.isArray(data)) {
+    return data.map((item) => (item === undefined ? null : sanitizeForFirebase(item))) as unknown as T;
+  }
+  const clean: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(data as Record<string, unknown>)) {
+    if (val !== undefined) {
+      clean[key] = sanitizeForFirebase(val);
+    }
+  }
+  return clean as T;
+}
+
 class LocalDatabase {
   private isFirestoreAvailable = true;
 
@@ -460,9 +484,13 @@ class LocalDatabase {
         const roomRef = doc(db, 'rooms', roomId);
         batch.update(roomRef, { status: 'active' });
 
-        // Clear RTDB events for this room to start fresh (asynchronously)
+        // Clear RTDB events and stale game states for this room to start fresh (asynchronously)
         const roomEventsRef = ref(rtdb, `rooms/${roomId}/events`);
         remove(roomEventsRef).catch((e) => console.warn('[LocalDatabase] Failed to clear RTDB events:', e));
+        const roomGameRef = ref(rtdb, `rooms/${roomId}/gameState`);
+        remove(roomGameRef).catch((e) => console.warn('[LocalDatabase] Failed to clear RTDB gameState:', e));
+        const roomPrivateRef = ref(rtdb, `rooms/${roomId}/private`);
+        remove(roomPrivateRef).catch((e) => console.warn('[LocalDatabase] Failed to clear RTDB private:', e));
 
         await batch.commit();
         return;
@@ -546,11 +574,14 @@ class LocalDatabase {
   }
 
   broadcastEvent(roomId: string, event: GameEvent) {
+    const cleanEvent = sanitizeForFirebase(event);
     if (this.isFirebaseEnabled()) {
       try {
         const roomEventsRef = ref(rtdb, `rooms/${roomId}/events`);
         const newEventRef = push(roomEventsRef);
-        set(newEventRef, event);
+        set(newEventRef, cleanEvent).catch((e) =>
+          console.warn('[LocalDatabase] broadcastEvent RTDB error:', e)
+        );
         return;
       } catch (error) {
         this.handleFirestoreError(error);
@@ -559,8 +590,8 @@ class LocalDatabase {
 
     const state = localRooms.get(roomId);
     if (!state) return;
-    state.events.push(event);
-    triggerListener(`events_${roomId}`, event);
+    state.events.push(cleanEvent);
+    triggerListener(`events_${roomId}`, cleanEvent);
   }
 
   subscribeToRoom(roomId: string, callback: (room: Room) => void): () => void {
@@ -709,10 +740,6 @@ class LocalDatabase {
 
   subscribeToEvents(roomId: string, callback: (event: GameEvent) => void): () => void {
     if (!this.isFirebaseEnabled()) {
-      const state = localRooms.get(roomId);
-      if (state && state.events.length > 0) {
-        callback(state.events[state.events.length - 1]);
-      }
       const key = `events_${roomId}`;
       if (!listeners.has(key)) {
         listeners.set(key, new Set());
@@ -728,6 +755,7 @@ class LocalDatabase {
     let localUnsubscribe: (() => void) | null = null;
     // Track the last delivered event key to avoid re-delivering on reconnect
     let lastDeliveredKey = '';
+    let isInitialSnapshot = true;
 
     // onValue returns an Unsubscribe function in the modular Firebase SDK
     const unsubscribeEvents = onValue(roomEventsRef, (snapshot) => {
@@ -737,12 +765,19 @@ class LocalDatabase {
         const keys = Object.keys(data).sort();
         if (keys.length > 0) {
           const latestKey = keys[keys.length - 1];
+          if (isInitialSnapshot) {
+            isInitialSnapshot = false;
+            lastDeliveredKey = latestKey;
+            return;
+          }
           // Guard: don't re-deliver the same event on reconnect
           if (latestKey !== lastDeliveredKey) {
             lastDeliveredKey = latestKey;
             callback(data[latestKey] as GameEvent);
           }
         }
+      } else {
+        isInitialSnapshot = false;
       }
     }, (error) => {
       // Disable Firebase FIRST, then set up local fallback
@@ -764,53 +799,54 @@ class LocalDatabase {
   }
 
   /**
-   * Write the full ToD game state to RTDB (fast path, ~50–150ms WebSocket sync).
-   * Uses set() on a fixed path so all subscribers get the current state on first connect.
+   * Write generic game state to RTDB (fast path, ~50–150ms WebSocket sync).
    */
-  setTodState(roomId: string, state: Record<string, unknown>): void {
+  setGameState(roomId: string, state: Record<string, unknown>): void {
+    const cleanState = sanitizeForFirebase(state);
     if (this.isFirebaseEnabled()) {
-      const todRef = ref(rtdb, `rooms/${roomId}/todState`);
-      set(todRef, state).catch((e) =>
-        console.warn('[LocalDatabase] setTodState RTDB error:', e)
-      );
+      try {
+        const gameRef = ref(rtdb, `rooms/${roomId}/gameState`);
+        set(gameRef, cleanState).catch((e) =>
+          console.warn('[LocalDatabase] setGameState RTDB error:', e)
+        );
+      } catch (e) {
+        console.warn('[LocalDatabase] setGameState sync error:', e);
+      }
       return;
     }
     // Local fallback
-    triggerListener(`todState_${roomId}`, state);
+    triggerListener(`gameState_${roomId}`, cleanState);
   }
 
   /**
-   * Subscribe to ToD game state from RTDB.
-   * Fires immediately with current state AND on every future change.
+   * Subscribe to generic game state from RTDB.
    */
-  subscribeTodState(
+  subscribeGameState(
     roomId: string,
     callback: (state: Record<string, unknown>) => void
   ): () => void {
     if (this.isFirebaseEnabled()) {
-      const todRef = ref(rtdb, `rooms/${roomId}/todState`);
+      const gameRef = ref(rtdb, `rooms/${roomId}/gameState`);
 
-      // onValue returns an Unsubscribe function in the modular Firebase SDK
-      const unsubscribeTodState = onValue(
-        todRef,
+      const unsubscribeGameState = onValue(
+        gameRef,
         (snapshot) => {
           if (snapshot.exists()) {
             callback(snapshot.val() as Record<string, unknown>);
           }
         },
         (error) => {
-          console.warn('[LocalDatabase] subscribeTodState RTDB error:', error);
+          console.warn('[LocalDatabase] subscribeGameState RTDB error:', error);
         }
       );
 
       return () => {
-        // Call the unsubscribe function directly — do NOT use off() with modular SDK
-        unsubscribeTodState();
+        unsubscribeGameState();
       };
     }
 
     // Local fallback — register listener
-    const key = `todState_${roomId}`;
+    const key = `gameState_${roomId}`;
     if (!listeners.has(key)) {
       listeners.set(key, new Set());
     }
@@ -818,6 +854,82 @@ class LocalDatabase {
     return () => {
       listeners.get(key)?.delete(callback);
     };
+  }
+
+  /**
+   * Write private player state to RTDB (visible only to target player).
+   */
+  setPrivateState(roomId: string, targetPlayerId: string, state: Record<string, unknown>): void {
+    const cleanState = sanitizeForFirebase(state);
+    if (this.isFirebaseEnabled()) {
+      try {
+        const pRef = ref(rtdb, `rooms/${roomId}/private/${targetPlayerId}`);
+        set(pRef, cleanState).catch((e) =>
+          console.warn('[LocalDatabase] setPrivateState RTDB error:', e)
+        );
+      } catch (e) {
+        console.warn('[LocalDatabase] setPrivateState sync error:', e);
+      }
+      return;
+    }
+    // Local fallback
+    triggerListener(`privateState_${roomId}_${targetPlayerId}`, cleanState);
+  }
+
+  /**
+   * Subscribe to player's private state from RTDB.
+   */
+  subscribePrivateState(
+    roomId: string,
+    playerId: string,
+    callback: (state: Record<string, unknown>) => void
+  ): () => void {
+    if (this.isFirebaseEnabled()) {
+      const pRef = ref(rtdb, `rooms/${roomId}/private/${playerId}`);
+      const unsubscribe = onValue(
+        pRef,
+        (snapshot) => {
+          if (snapshot.exists()) {
+            callback(snapshot.val() as Record<string, unknown>);
+          }
+        },
+        (error) => {
+          console.warn('[LocalDatabase] subscribePrivateState RTDB error:', error);
+        }
+      );
+      return () => {
+        unsubscribe();
+      };
+    }
+
+    // Local fallback
+    const key = `privateState_${roomId}_${playerId}`;
+    if (!listeners.has(key)) {
+      listeners.set(key, new Set());
+    }
+    listeners.get(key)!.add(callback);
+    return () => {
+      listeners.get(key)?.delete(callback);
+    };
+  }
+
+  /**
+   * Write the full ToD game state to RTDB (fast path, ~50–150ms WebSocket sync).
+   * Backwards compatible alias to setGameState.
+   */
+  setTodState(roomId: string, state: Record<string, unknown>): void {
+    this.setGameState(roomId, state);
+  }
+
+  /**
+   * Subscribe to ToD game state from RTDB.
+   * Backwards compatible alias to subscribeGameState.
+   */
+  subscribeTodState(
+    roomId: string,
+    callback: (state: Record<string, unknown>) => void
+  ): () => void {
+    return this.subscribeGameState(roomId, callback);
   }
 
   async spawnBots(roomId: string) {
@@ -987,6 +1099,25 @@ export const roomService = {
   },
 
   /**
+   * Write generic game state to RTDB (fast path).
+   * Call this on every game action instead of updateSettings.
+   */
+  syncGameState: (roomId: string, state: Record<string, unknown>): void => {
+    roomDatabase.setGameState(roomId, state);
+  },
+
+  /**
+   * Subscribe to generic game state from RTDB.
+   * Returns an unsubscribe function.
+   */
+  onGameState: (
+    roomId: string,
+    callback: (state: Record<string, unknown>) => void
+  ): (() => void) => {
+    return roomDatabase.subscribeGameState(roomId, callback);
+  },
+
+  /**
    * Write ToD game state to RTDB (fast path).
    * Call this on every game action instead of updateSettings.
    */
@@ -1003,5 +1134,27 @@ export const roomService = {
     callback: (state: Record<string, unknown>) => void
   ): (() => void) => {
     return roomDatabase.subscribeTodState(roomId, callback);
+  },
+
+  /**
+   * Write private player-specific state (e.g., secret word, impostor status, hidden identity).
+   */
+  syncPrivateState: (
+    roomId: string,
+    targetPlayerId: string,
+    state: Record<string, unknown>
+  ): void => {
+    roomDatabase.setPrivateState(roomId, targetPlayerId, state);
+  },
+
+  /**
+   * Subscribe to current player's private state.
+   */
+  onPrivateState: (
+    roomId: string,
+    playerId: string,
+    callback: (state: Record<string, unknown>) => void
+  ): (() => void) => {
+    return roomDatabase.subscribePrivateState(roomId, playerId, callback);
   },
 };

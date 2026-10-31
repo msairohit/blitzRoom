@@ -44,6 +44,10 @@ export interface Player {
   isDone?: boolean;
   /** Whether this player is currently offline (disconnected) */
   isOffline?: boolean;
+  /** Whether this player has been eliminated in an elimination-style game */
+  isEliminated?: boolean;
+  /** Team identifier for team-based games */
+  teamId?: string;
 }
 
 export interface PlayerJoinPayload {

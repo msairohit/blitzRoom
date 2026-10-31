@@ -1,3 +1,5 @@
+import { Platform } from 'react-native';
+
 /**
  * Spacing & layout tokens for BlitzRoom
  * Base unit: 4px
@@ -49,35 +51,56 @@ export const radius = {
 
 /** Elevation/shadow presets */
 export const shadows = {
-  sm: {
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.15,
-    shadowRadius: 3,
-    elevation: 2,
-  },
-  md: {
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  lg: {
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.25,
-    shadowRadius: 16,
-    elevation: 8,
-  },
-  glow: (color: string) => ({
-    shadowColor: color,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.4,
-    shadowRadius: 20,
-    elevation: 10,
-  }),
-} as const;
+  sm: Platform.select({
+    web: {
+      boxShadow: '0 1px 3px rgba(0, 0, 0, 0.15)',
+    },
+    default: {
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.15,
+      shadowRadius: 3,
+      elevation: 2,
+    },
+  }) as any,
+  md: Platform.select({
+    web: {
+      boxShadow: '0 4px 8px rgba(0, 0, 0, 0.2)',
+    },
+    default: {
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.2,
+      shadowRadius: 8,
+      elevation: 4,
+    },
+  }) as any,
+  lg: Platform.select({
+    web: {
+      boxShadow: '0 8px 16px rgba(0, 0, 0, 0.25)',
+    },
+    default: {
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 8 },
+      shadowOpacity: 0.25,
+      shadowRadius: 16,
+      elevation: 8,
+    },
+  }) as any,
+  glow: (color: string) =>
+    Platform.select({
+      web: {
+        boxShadow: `0 0 20px ${color}`,
+      },
+      default: {
+        shadowColor: color,
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 0.4,
+        shadowRadius: 20,
+        elevation: 10,
+      },
+    }) as any,
+};
 
 /** Animation timing constants */
 export const animation = {

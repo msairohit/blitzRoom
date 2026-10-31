@@ -92,7 +92,7 @@ export default function PlayScreen() {
   const handleSyncGameState = useCallback(
     (state: Record<string, unknown>) => {
       if (!roomId) return;
-      roomService.syncTodState(roomId, state);
+      roomService.syncGameState(roomId, state);
     },
     [roomId]
   );
@@ -100,9 +100,25 @@ export default function PlayScreen() {
   const handleOnGameState = useCallback(
     (callback: (state: Record<string, unknown>) => void) => {
       if (!roomId) return () => {};
-      return roomService.onTodState(roomId, callback);
+      return roomService.onGameState(roomId, callback);
     },
     [roomId]
+  );
+
+  const handleSyncPrivateState = useCallback(
+    (targetPlayerId: string, state: Record<string, unknown>) => {
+      if (!roomId) return;
+      roomService.syncPrivateState(roomId, targetPlayerId, state);
+    },
+    [roomId]
+  );
+
+  const handleOnPrivateState = useCallback(
+    (callback: (state: Record<string, unknown>) => void) => {
+      if (!roomId || !currentUser.userId) return () => {};
+      return roomService.onPrivateState(roomId, currentUser.userId, callback);
+    },
+    [roomId, currentUser.userId]
   );
 
   if (!currentRoom) {
@@ -138,6 +154,8 @@ export default function PlayScreen() {
         onGameEvent={handleSubscribeToEvents}
         syncGameState={handleSyncGameState}
         onGameState={handleOnGameState}
+        syncPrivateState={handleSyncPrivateState}
+        onPrivateState={handleOnPrivateState}
       />
     </SafeAreaView>
   );

@@ -5,13 +5,14 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Animated as RNAnimated } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Animated as RNAnimated, Platform } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTheme } from '@/src/theme';
-import type { ActivityGameProps, ActivityResults } from '@/src/types/activity';
+import type { ActivityGameProps, ActivityResults, GameEvent } from '@/src/types/activity';
 import { SAMPLE_QUESTIONS, type QuizQuestion } from './types';
 import { haptics } from '@/src/utils/haptics';
 import { roomService } from '@/src/services/roomService';
+import { historyService } from '@/src/services/historyService';
 
 type QuizPhase = 'countdown' | 'question' | 'reveal' | 'scores' | 'finished';
 
@@ -23,6 +24,8 @@ export function QuizGame({
   players,
   settings,
   onActivityEnd,
+  broadcastEvent,
+  onGameEvent,
 }: ActivityGameProps) {
   const { colors, spacing, radius, typography } = useTheme();
 
@@ -32,6 +35,8 @@ export function QuizGame({
   const [phase, setPhase] = useState<QuizPhase>('countdown');
   const [countdownValue, setCountdownValue] = useState(3);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+  const [isRevealPaused, setIsRevealPaused] = useState(false);
+  const [revealTimer, setRevealTimer] = useState(6);
   const [timeLeft, setTimeLeft] = useState(timePerQuestion);
   const [selectedAnswer, setSelectedAnswer] = useState<number | null>(null);
   const [showCorrect, setShowCorrect] = useState(false);
@@ -85,74 +90,152 @@ export function QuizGame({
 
   // Question timer
   useEffect(() => {
-    if (phase !== 'question') return;
+    if (phase !== 'question') {
+      if (timerRef.current) clearInterval(timerRef.current);
+      return;
+    }
 
     questionStartTimeRef.current = Date.now();
     setTimeLeft(timePerQuestion);
 
     timerRef.current = setInterval(() => {
-      const elapsed = (Date.now() - questionStartTimeRef.current) / 1000;
-      const remaining = Math.max(0, Math.ceil(timePerQuestion - elapsed));
-      setTimeLeft(remaining);
+      setTimeLeft((prev) => {
+        if (prev <= 1) {
+          if (timerRef.current) clearInterval(timerRef.current);
+          // Time's up — show reveal
+          setRoundPointsAwarded({
+            points: 0,
+            base: 0,
+            bonus: 0,
+            timeRemainingSec: 0,
+            isCorrect: false,
+          });
+          setShowCorrect(true);
+          setRevealTimer(6);
+          setPhase('reveal');
+          haptics.warning();
+          return 0;
+        }
 
-      if (remaining <= 0) {
-        if (timerRef.current) clearInterval(timerRef.current);
-        // Time's up — show reveal
-        setRoundPointsAwarded({
-          points: 0,
-          base: 0,
-          bonus: 0,
-          timeRemainingSec: 0,
-          isCorrect: false,
-        });
-        setShowCorrect(true);
-        setPhase('reveal');
-        haptics.warning();
-      } else if (remaining <= 5) {
-        haptics.light();
-        // Pulse animation for last 5 seconds
-        RNAnimated.sequence([
-          RNAnimated.timing(pulseAnim, {
-            toValue: 1.2,
-            duration: 100,
-            useNativeDriver: true,
-          }),
-          RNAnimated.timing(pulseAnim, {
-            toValue: 1,
-            duration: 100,
-            useNativeDriver: true,
-          }),
-        ]).start();
-      }
-    }, 250);
+        const next = prev - 1;
+        if (next <= 5 && next > 0) {
+          haptics.light();
+          // Pulse animation for last 5 seconds (once per second)
+          RNAnimated.sequence([
+            RNAnimated.timing(pulseAnim, {
+              toValue: 1.2,
+              duration: 100,
+              useNativeDriver: Platform.OS !== 'web',
+            }),
+            RNAnimated.timing(pulseAnim, {
+              toValue: 1,
+              duration: 100,
+              useNativeDriver: Platform.OS !== 'web',
+            }),
+          ]).start();
+        }
+        return next;
+      });
+    }, 1000);
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
   }, [phase, currentQuestionIndex, timePerQuestion, pulseAnim]);
 
-  // Auto-advance from reveal to next question
+  const advanceToNextQuestion = useCallback(() => {
+    setIsRevealPaused(false);
+    if (currentQuestionIndex < questions.length - 1) {
+      setTimeLeft(timePerQuestion);
+      setSelectedAnswer(null);
+      setShowCorrect(false);
+      setRoundPointsAwarded(null);
+      questionStartTimeRef.current = Date.now();
+      setCurrentQuestionIndex((prev) => prev + 1);
+      setPhase('question');
+    } else {
+      setPhase('finished');
+      // Mark player as done in the database
+      roomService.updatePlayer(roomId, currentPlayerId, { isDone: true }).catch(console.error);
+    }
+  }, [currentQuestionIndex, questions.length, timePerQuestion, roomId, currentPlayerId]);
+
+  // Reveal countdown effect (pausable for group discussion)
   useEffect(() => {
-    if (phase !== 'reveal') return;
+    if (phase !== 'reveal') {
+      setRevealTimer(6);
+      return;
+    }
 
-    const timeout = setTimeout(() => {
-      if (currentQuestionIndex < questions.length - 1) {
-        setTimeLeft(timePerQuestion);
-        setSelectedAnswer(null);
-        setShowCorrect(false);
-        setRoundPointsAwarded(null);
-        questionStartTimeRef.current = Date.now();
-        setCurrentQuestionIndex((prev) => prev + 1);
-        setPhase('question');
-      } else {
-        setPhase('finished');
-        // Mark player as done in the database
-        roomService.updatePlayer(roomId, currentPlayerId, { isDone: true }).catch(console.error);
+    if (isRevealPaused) return;
+
+    const interval = setInterval(() => {
+      setRevealTimer((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          advanceToNextQuestion();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [phase, isRevealPaused, advanceToNextQuestion]);
+
+  // Subscribe to pause & next events from host
+  useEffect(() => {
+    if (!onGameEvent) return;
+
+    const unsub = onGameEvent((event: GameEvent) => {
+      if (event.type === 'QUIZ_PAUSE_REVEAL') {
+        const isPaused = Boolean(event.payload.isPaused);
+        setIsRevealPaused(isPaused);
+        if (typeof event.payload.revealTimer === 'number') {
+          setRevealTimer(event.payload.revealTimer);
+        }
+      } else if (event.type === 'QUIZ_NEXT_QUESTION') {
+        advanceToNextQuestion();
       }
-    }, 2500);
+    });
 
-    return () => clearTimeout(timeout);
-  }, [phase, currentQuestionIndex, questions.length, roomId, currentPlayerId, timePerQuestion]);
+    return unsub;
+  }, [onGameEvent, advanceToNextQuestion]);
+
+  const handleTogglePause = useCallback(() => {
+    if (!isAdmin) return;
+    haptics.medium();
+    const nextVal = !isRevealPaused;
+    setIsRevealPaused(nextVal);
+    let nextTimer = revealTimer;
+    // When resuming, if time left was low, give players at least 5 seconds buffer
+    if (!nextVal && revealTimer <= 2) {
+      nextTimer = 5;
+      setRevealTimer(5);
+    }
+    if (broadcastEvent) {
+      broadcastEvent({
+        type: 'QUIZ_PAUSE_REVEAL',
+        senderId: currentPlayerId,
+        payload: { isPaused: nextVal, revealTimer: nextTimer },
+        timestamp: Date.now(),
+      });
+    }
+  }, [isAdmin, isRevealPaused, revealTimer, broadcastEvent, currentPlayerId]);
+
+  const handleHostNext = useCallback(() => {
+    if (!isAdmin) return;
+    haptics.medium();
+    if (broadcastEvent) {
+      broadcastEvent({
+        type: 'QUIZ_NEXT_QUESTION',
+        senderId: currentPlayerId,
+        payload: {},
+        timestamp: Date.now(),
+      });
+    }
+    advanceToNextQuestion();
+  }, [isAdmin, broadcastEvent, currentPlayerId, advanceToNextQuestion]);
 
   // Simulated Bots Loop (Runs only on Admin client)
   useEffect(() => {
@@ -213,7 +296,6 @@ export function QuizGame({
 
     const saveHistory = async () => {
       try {
-        const { historyService } = await import('@/src/services/historyService');
         await historyService.saveGameHistory({
           activityType: 'quiz',
           roomCode: roomCode,
@@ -262,6 +344,7 @@ export function QuizGame({
       });
 
       setShowCorrect(true);
+      setRevealTimer(6);
       setTimeout(() => setPhase('reveal'), 500);
     },
     [selectedAnswer, phase, currentQuestion, timePerQuestion, roomId, currentPlayerId]
@@ -436,29 +519,71 @@ export function QuizGame({
           style={[
             styles.timerBadge,
             {
-              backgroundColor: timeLeft <= 5 ? colors.error : colors.primary,
+              backgroundColor:
+                phase === 'reveal'
+                  ? isRevealPaused
+                    ? '#FEF3C7'
+                    : colors.surfaceElevated
+                  : timeLeft <= 5
+                  ? colors.error
+                  : colors.primary,
+              borderColor:
+                phase === 'reveal'
+                  ? isRevealPaused
+                    ? '#F59E0B'
+                    : colors.borderLight
+                  : 'transparent',
+              borderWidth: phase === 'reveal' ? 1.5 : 0,
               borderRadius: radius.full,
               paddingVertical: spacing.sm,
-              paddingHorizontal: spacing.lg,
+              paddingHorizontal: spacing.md,
               transform: [{ scale: pulseAnim }],
+              flexDirection: 'row',
+              alignItems: 'center',
             },
           ]}
         >
           <MaterialCommunityIcons
-            name="timer-outline"
+            name={
+              phase === 'reveal'
+                ? isRevealPaused
+                  ? 'pause-circle'
+                  : 'timer-sand'
+                : 'timer-outline'
+            }
             size={16}
-            color={timeLeft <= 5 ? '#FFF' : colors.textOnPrimary}
+            color={
+              phase === 'reveal'
+                ? isRevealPaused
+                  ? '#D97706'
+                  : colors.textPrimary
+                : timeLeft <= 5
+                ? '#FFF'
+                : colors.textOnPrimary
+            }
           />
           <Text
             style={[
-              typography.titleSmall,
+              typography.labelMedium,
               {
-                color: timeLeft <= 5 ? '#FFF' : colors.textOnPrimary,
+                color:
+                  phase === 'reveal'
+                    ? isRevealPaused
+                      ? '#B45309'
+                      : colors.textPrimary
+                    : timeLeft <= 5
+                    ? '#FFF'
+                    : colors.textOnPrimary,
                 marginLeft: spacing.xs,
+                fontWeight: 'bold',
               },
             ]}
           >
-            {timeLeft}s
+            {phase === 'reveal'
+              ? isRevealPaused
+                ? 'Discussion'
+                : `Next in ${revealTimer}s`
+              : `${timeLeft}s`}
           </Text>
         </RNAnimated.View>
       </View>
@@ -603,6 +728,81 @@ export function QuizGame({
           );
         })}
       </View>
+
+      {/* Reveal Phase Discussion & Advance Controls */}
+      {phase === 'reveal' && (
+        <View style={{ paddingHorizontal: spacing.lg, paddingBottom: spacing.sm }}>
+          {isAdmin ? (
+            <View style={{ flexDirection: 'row', gap: spacing.sm }}>
+              <TouchableOpacity
+                style={{
+                  flex: 1,
+                  backgroundColor: isRevealPaused ? colors.surfaceElevated : '#FEF3C7',
+                  borderColor: isRevealPaused ? colors.borderLight : '#F59E0B',
+                  borderWidth: 1.5,
+                  borderRadius: radius.md,
+                  paddingVertical: spacing.md,
+                  flexDirection: 'row',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                }}
+                onPress={handleTogglePause}
+                activeOpacity={0.7}
+              >
+                <MaterialCommunityIcons
+                  name={isRevealPaused ? 'play' : 'pause'}
+                  size={18}
+                  color={isRevealPaused ? colors.textPrimary : '#B45309'}
+                />
+                <Text
+                  style={[
+                    typography.labelMedium,
+                    {
+                      color: isRevealPaused ? colors.textPrimary : '#92400E',
+                      fontWeight: 'bold',
+                      marginLeft: 6,
+                    },
+                  ]}
+                >
+                  {isRevealPaused ? 'Resume Timer' : 'Pause to Discuss'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={{
+                  flex: 1,
+                  backgroundColor: colors.primary,
+                  borderRadius: radius.md,
+                  paddingVertical: spacing.md,
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                }}
+                onPress={handleHostNext}
+                activeOpacity={0.7}
+              >
+                <Text style={[typography.labelMedium, { color: '#FFF', fontWeight: 'bold' }]}>
+                  {currentQuestionIndex < questions.length - 1 ? 'Next Question ➔' : 'View Results ➔'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ) : isRevealPaused ? (
+            <View
+              style={{
+                backgroundColor: colors.surface,
+                borderColor: '#F59E0B',
+                borderWidth: 1,
+                borderRadius: radius.md,
+                padding: spacing.md,
+                alignItems: 'center',
+              }}
+            >
+              <Text style={[typography.bodySmall, { color: '#B45309', fontWeight: '600', textAlign: 'center' }]}>
+                💬 Room host paused timer for group discussion!
+              </Text>
+            </View>
+          ) : null}
+        </View>
+      )}
 
       {/* Score bar */}
       <View

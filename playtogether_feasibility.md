@@ -17,7 +17,8 @@ BlitzRoom is already a well-architected multiplayer platform. Here's what exists
 | **Local Fallback** | ✅ Done | Full in-memory DB fallback when Firebase is unavailable (dev/testing) |
 | **Player Presence** | ✅ Done | Online/offline detection via `onDisconnect` |
 | **Bot Support** | ✅ Done | `spawnBots` for solo testing |
-| **2 Games Live** | ✅ Done | Quiz Battle + Truth or Dare |
+| **5 Games Live** | ✅ Done | Quiz Battle + Truth or Dare + Would You Rather + Find the Impostor + Who Am I? |
+| **Private State Sync** | ✅ Done | `syncPrivateState` / `onPrivateState` (rooms/{roomId}/private/{playerId}) |
 
 ### The Plugin Interface — Core of Everything
 

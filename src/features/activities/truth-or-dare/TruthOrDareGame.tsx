@@ -23,12 +23,14 @@ import {
   StyleSheet,
   TouchableOpacity,
   Animated as RNAnimated,
+  Platform,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTheme } from '@/src/theme';
 import type { ActivityGameProps } from '@/src/types/activity';
 import { SAMPLE_PROMPTS, type TodPrompt, type TodCategory } from './types';
 import { haptics } from '@/src/utils/haptics';
+import { historyService } from '@/src/services/historyService';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -272,7 +274,6 @@ export function TruthOrDareGame({
 
     const saveHistory = async () => {
       try {
-        const { historyService } = await import('@/src/services/historyService');
         await historyService.saveGameHistory({
           activityType: 'truth-or-dare',
           roomCode: roomCode,
@@ -297,7 +298,7 @@ export function TruthOrDareGame({
     RNAnimated.timing(spinAnim, {
       toValue: 1,
       duration: 1500,
-      useNativeDriver: true,
+      useNativeDriver: Platform.OS !== 'web',
     }).start(({ finished }) => {
       if (!finished) return;
       haptics.medium();
@@ -336,8 +337,8 @@ export function TruthOrDareGame({
     fadeAnim.setValue(0);
     scaleAnim.setValue(0.8);
     RNAnimated.parallel([
-      RNAnimated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }),
-      RNAnimated.spring(scaleAnim, { toValue: 1, damping: 12, stiffness: 150, useNativeDriver: true }),
+      RNAnimated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: Platform.OS !== 'web' }),
+      RNAnimated.spring(scaleAnim, { toValue: 1, damping: 12, stiffness: 150, useNativeDriver: Platform.OS !== 'web' }),
     ]).start();
   }, [phase, fadeAnim, scaleAnim]);
 
