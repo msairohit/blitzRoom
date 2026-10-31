@@ -42,6 +42,8 @@ export interface Player {
   isAdmin: boolean;
   /** Whether this player has finished the active game/activity */
   isDone?: boolean;
+  /** Whether this player is currently offline (disconnected) */
+  isOffline?: boolean;
 }
 
 export interface PlayerJoinPayload {

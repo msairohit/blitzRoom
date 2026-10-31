@@ -1,7 +1,13 @@
-test truth or dare, its not working after latest changes.
-add more questions to truth or dare (atleast 100 each) by searching the net.
+(done)test truth or dare, its not working after latest changes.
+(done)add more questions to truth or dare (atleast 100 each) by searching the net.
 add more party multiplayer games.
 why there is still data in table when anonymous users logged in?
 add authentication functionality.
 check if its getting stored properly or not (new category in quiz and previous games)
 dashboard kind of thing for the player in profile section or somewhere to show all the previous game details.
+
+npx expo prebuild (to generate the native android and ios code. not eject, still can use expo related stuff but can be used to build the apps locally.)
+npx expo run:android --variant debug (connect the mobile to laptop and run this cmd to build the app, generate the apk and install to the mobile with hot reload, connceted to dev server.)
+npx expo run:android --variant release (same as above but does not connect to metro and hence no need to run the server and no hot reloading.)
+expo start -d (if we just want to run the app on mobile. if not installed any new packages then this cmd is enough no need for above cmd.) 
+npx expo start -c

@@ -53,7 +53,14 @@ export default function PlayScreen() {
       haptics.success();
       // transition room status back to finished
       if (currentRoom) {
-        await roomService.endActivity(currentRoom.id);
+        const roomId = currentRoom.id;
+        await roomService.endActivity(roomId);
+        
+        // Let clients process the finished status, then delete the room documents
+        setTimeout(() => {
+          roomService.deleteFinishedRoom(roomId).catch(console.error);
+        }, 2000);
+
         // Reset room state
         useRoomStore.getState().reset();
         router.replace('/');

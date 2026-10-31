@@ -23,7 +23,7 @@ import {
   onSnapshot,
   writeBatch,
 } from 'firebase/firestore';
-import { ref, set, push, onValue, off, remove } from 'firebase/database';
+import { ref, set, push, onValue, off, remove, onDisconnect } from 'firebase/database';
 
 interface InMemoryRoomState {
   room: Room;
@@ -163,7 +163,7 @@ class LocalDatabase {
         }
         const docSnap = querySnapshot.docs[0];
         const room = docSnap.data() as Room;
-        if (room.status === 'finished') {
+        if (room.status === 'finished' || room.status === 'active') {
           return undefined;
         }
         return room;
@@ -174,7 +174,11 @@ class LocalDatabase {
 
     const targetCode = code.toUpperCase();
     for (const state of localRooms.values()) {
-      if (state.room.code === targetCode && state.room.status !== 'finished') {
+      if (
+        state.room.code === targetCode &&
+        state.room.status !== 'finished' &&
+        state.room.status !== 'active'
+      ) {
         return state.room;
       }
     }
@@ -193,6 +197,10 @@ class LocalDatabase {
           throw new Error('Room not found');
         }
         const room = roomSnap.data() as Room;
+
+        if (room.status === 'active') {
+          throw new Error('Game is already in progress');
+        }
 
         const playersRef = collection(db, 'rooms', roomId, 'players');
         const playersSnap = await getDocs(playersRef);
@@ -221,12 +229,17 @@ class LocalDatabase {
         return { ...room, playerCount: newCount };
       } catch (error) {
         this.handleFirestoreError(error);
+        throw error;
       }
     }
 
     const state = localRooms.get(roomId);
     if (!state) {
       throw new Error('Room not found');
+    }
+
+    if (state.room.status === 'active') {
+      throw new Error('Game is already in progress');
     }
 
     const currentPlayers = Array.from(state.players.values());
@@ -328,6 +341,36 @@ class LocalDatabase {
 
     triggerListener(`room_${roomId}`, state.room);
     triggerListener(`players_${roomId}`, remainingPlayers);
+  }
+
+  async deleteFinishedRoom(roomId: string) {
+    if (this.isFirebaseEnabled()) {
+      try {
+        const roomRef = doc(db, 'rooms', roomId);
+
+        // 1. Delete players subcollection documents
+        const playersRef = collection(db, 'rooms', roomId, 'players');
+        const playersSnap = await getDocs(playersRef);
+        const batch = writeBatch(db);
+        playersSnap.docs.forEach((docSnap) => {
+          batch.delete(docSnap.ref);
+        });
+        await batch.commit();
+
+        // 2. Delete room document
+        await deleteDoc(roomRef);
+
+        // 3. Clean up RTDB events and state trees
+        const roomEventsRef = ref(rtdb, `rooms/${roomId}`);
+        await remove(roomEventsRef);
+        return;
+      } catch (error) {
+        this.handleFirestoreError(error);
+      }
+    }
+
+    // Local Fallback cleanup
+    localRooms.delete(roomId);
   }
 
   async toggleReady(roomId: string, playerId: string, currentReadyState?: boolean) {
@@ -541,6 +584,13 @@ class LocalDatabase {
     let unsubscribed = false;
     let localUnsubscribe: (() => void) | null = null;
 
+    const myId = useUserStore.getState().userId;
+    if (myId) {
+      const presenceRef = ref(rtdb, `rooms/${roomId}/presence/${myId}`);
+      set(presenceRef, true).catch(() => {});
+      onDisconnect(presenceRef).remove().catch(() => {});
+    }
+
     const firestoreUnsubscribe = onSnapshot(roomRef, (snapshot) => {
       if (snapshot.exists()) {
         callback(snapshot.data() as Room);
@@ -558,6 +608,10 @@ class LocalDatabase {
       firestoreUnsubscribe();
       if (localUnsubscribe) {
         localUnsubscribe();
+      }
+      if (myId) {
+        const presenceRef = ref(rtdb, `rooms/${roomId}/presence/${myId}`);
+        remove(presenceRef).catch(() => {});
       }
     };
   }
@@ -581,6 +635,40 @@ class LocalDatabase {
     const playersRef = collection(db, 'rooms', roomId, 'players');
     let unsubscribed = false;
     let localUnsubscribe: (() => void) | null = null;
+    let lastPlayers: Player[] = [];
+    let presenceMap: Record<string, boolean> = {};
+
+    const triggerCallback = () => {
+      const updatedList = lastPlayers.map((player) => {
+        if (player.id.startsWith('bot_')) {
+          return { ...player, isOffline: false };
+        }
+        return {
+          ...player,
+          isOffline: !presenceMap[player.id],
+        };
+      });
+      callback(updatedList);
+
+      // Admin promotion: if current admin goes offline, promote the oldest active player
+      const currentRoomData = useRoomStore.getState().currentRoom;
+      if (currentRoomData && updatedList.length > 0) {
+        const adminPlayer = updatedList.find((p) => p.id === currentRoomData.adminId);
+        if (adminPlayer && adminPlayer.isOffline) {
+          const activePlayers = updatedList.filter((p) => !p.isOffline && !p.id.startsWith('bot_'));
+          if (activePlayers.length > 0) {
+            const newAdmin = activePlayers[0];
+            const myId = useUserStore.getState().userId;
+            if (newAdmin.id === myId) {
+              const roomDocRef = doc(db, 'rooms', roomId);
+              updateDoc(roomDocRef, { adminId: myId }).catch(console.error);
+              updateDoc(doc(db, 'rooms', roomId, 'players', myId), { isAdmin: true }).catch(console.error);
+              updateDoc(doc(db, 'rooms', roomId, 'players', adminPlayer.id), { isAdmin: false }).catch(console.error);
+            }
+          }
+        }
+      }
+    };
 
     const firestoreUnsubscribe = onSnapshot(playersRef, (snapshot) => {
       const playersList: Player[] = [];
@@ -588,7 +676,8 @@ class LocalDatabase {
         playersList.push(doc.data() as Player);
       });
       playersList.sort((a, b) => a.joinedAt - b.joinedAt);
-      callback(playersList);
+      lastPlayers = playersList;
+      triggerCallback();
     }, (error) => {
       console.warn('[LocalDatabase] subscribeToPlayers Firestore error:', error);
       this.handleFirestoreError(error);
@@ -597,9 +686,18 @@ class LocalDatabase {
       }
     });
 
+    const presenceRef = ref(rtdb, `rooms/${roomId}/presence`);
+    const presenceUnsubscribe = onValue(presenceRef, (snapshot) => {
+      presenceMap = snapshot.val() || {};
+      triggerCallback();
+    }, (error) => {
+      console.warn('[LocalDatabase] subscribeToPlayers presence RTDB error:', error);
+    });
+
     return () => {
       unsubscribed = true;
       firestoreUnsubscribe();
+      off(presenceRef, 'value', presenceUnsubscribe);
       if (localUnsubscribe) {
         localUnsubscribe();
       }
@@ -843,6 +941,10 @@ export const roomService = {
 
   endActivity: async (roomId: string): Promise<void> => {
     await roomDatabase.updateRoomStatus(roomId, 'finished');
+  },
+
+  deleteFinishedRoom: async (roomId: string): Promise<void> => {
+    await roomDatabase.deleteFinishedRoom(roomId);
   },
 
   updateSettings: async (roomId: string, settings: Record<string, unknown>): Promise<void> => {

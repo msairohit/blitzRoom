@@ -70,6 +70,8 @@ function todStateKey(s: TodState): string {
 // ---------------------------------------------------------------------------
 
 export function TruthOrDareGame({
+  roomId,
+  roomCode,
   currentPlayerId,
   isAdmin,
   players,
@@ -97,14 +99,24 @@ export function TruthOrDareGame({
   const lastAppliedKeyRef = useRef<string>('');
   // Guard against running init twice
   const didInitRef = useRef(false);
+  const hasSavedHistory = useRef(false);
 
   // Derived: who is playing right now
   const currentPlayerId_turn = playerOrder[orderIndex % playerOrder.length];
-  const currentPlayer = players.find((p) => p.id === currentPlayerId_turn) ?? players[0];
+  const currentPlayer = players.find((p) => p.id === currentPlayerId_turn) || {
+    id: currentPlayerId_turn || 'offline',
+    displayName: 'Offline Player',
+    avatarColor: '#9CA3AF',
+    isReady: false,
+    score: 0,
+    joinedAt: 0,
+    isAdmin: false,
+  };
   const isMyTurn = currentPlayerId_turn === currentPlayerId;
 
   // Is the current player still in the room?
   const isCurrentPlayerPresent = players.some((p) => p.id === currentPlayerId_turn);
+
 
   const availablePrompts = SAMPLE_PROMPTS.filter(
     (p) => p.category === category && !usedPromptIds.has(p.id)
@@ -127,7 +139,10 @@ export function TruthOrDareGame({
 
     const unsub = onGameState((raw) => {
       const remote = raw as unknown as TodState;
-      if (!remote || !remote.playerOrder) return;
+      if (!remote || !remote.playerOrder || remote.playerOrder.length === 0) return;
+
+      // Mark as initialized so admin doesn't overwrite
+      didInitRef.current = true;
 
       const key = todStateKey(remote);
       if (key === lastAppliedKeyRef.current) return;
@@ -161,6 +176,7 @@ export function TruthOrDareGame({
   // ---- Admin: initialise game state on mount ----
   useEffect(() => {
     if (!isAdmin || didInitRef.current) return;
+    if (players.length === 0) return; // Wait until players list is loaded
     didInitRef.current = true;
 
     const shuffled = shuffleArray(players.map((p) => p.id));
@@ -181,8 +197,95 @@ export function TruthOrDareGame({
     setCurrentPrompt(null);
 
     pushState(initial);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAdmin]);
+  }, [isAdmin, players, pushState]);
+
+  // ---- Admin: clean up players who left ----
+  useEffect(() => {
+    if (!isAdmin) return;
+    if (playerOrder.length === 0 || players.length === 0) return;
+
+    // Check if there are any players in playerOrder who are not in players list
+    const missingPlayers = playerOrder.filter(
+      (id) => !players.some((p) => p.id === id)
+    );
+
+    if (missingPlayers.length > 0) {
+      // Find who was the current player before cleanup
+      const currentActiveId = playerOrder[orderIndex % playerOrder.length];
+      const newPlayerOrder = playerOrder.filter(
+        (id) => players.some((p) => p.id === id)
+      );
+
+      if (newPlayerOrder.length > 0) {
+        let newIndex = newPlayerOrder.indexOf(currentActiveId);
+        let nextPhase = phase;
+        let nextPromptId = currentPrompt?.id ?? null;
+        let nextPromptText = currentPrompt?.text ?? null;
+        let nextPromptType = currentPrompt?.type ?? null;
+
+        if (newIndex === -1) {
+          // The active player left! Advance to the next available player in original order
+          let foundNextId = '';
+          for (let i = 1; i <= playerOrder.length; i++) {
+            const checkId = playerOrder[(orderIndex + i) % playerOrder.length];
+            if (players.some((p) => p.id === checkId)) {
+              foundNextId = checkId;
+              break;
+            }
+          }
+          if (foundNextId) {
+            newIndex = newPlayerOrder.indexOf(foundNextId);
+          } else {
+            newIndex = 0;
+          }
+          // Reset phase to spinning for the new active player
+          nextPhase = 'spinning';
+          nextPromptId = null;
+          nextPromptText = null;
+          nextPromptType = null;
+        }
+
+        setPlayerOrder(newPlayerOrder);
+        setOrderIndex(newIndex);
+        setPhase(nextPhase);
+        if (nextPhase === 'spinning') {
+          setCurrentPrompt(null);
+        }
+
+        pushState({
+          phase: nextPhase,
+          playerOrder: newPlayerOrder,
+          orderIndex: newIndex,
+          roundCount,
+          promptId: nextPromptId,
+          promptText: nextPromptText,
+          promptType: nextPromptType,
+        });
+      }
+    }
+  }, [isAdmin, players, playerOrder, orderIndex, phase, currentPrompt, roundCount, pushState]);
+
+  // Save game history once game finishes
+  useEffect(() => {
+    if (phase !== 'finished' || hasSavedHistory.current) return;
+    hasSavedHistory.current = true;
+
+    const saveHistory = async () => {
+      try {
+        const { historyService } = await import('@/src/services/historyService');
+        await historyService.saveGameHistory({
+          activityType: 'truth-or-dare',
+          roomCode: roomCode,
+          score: 0, // No score in ToD
+          rank: 1,  // No ranking in ToD
+          totalPlayers: players.length,
+        });
+      } catch (e) {
+        console.error('[TruthOrDareGame] Error saving game history:', e);
+      }
+    };
+    saveHistory();
+  }, [phase, players.length, roomCode]);
 
   // ---- Spin animation (runs locally for everyone) ----
   const spinAnim = useRef(new RNAnimated.Value(0)).current;
@@ -198,10 +301,18 @@ export function TruthOrDareGame({
     }).start(({ finished }) => {
       if (!finished) return;
       haptics.medium();
-      setPhase('choosing');
+
+      let didTransition = false;
+      setPhase((prev) => {
+        if (prev === 'spinning') {
+          didTransition = true;
+          return 'choosing';
+        }
+        return prev;
+      });
 
       // Only the acting player (or admin for bot) advances phase in RTDB
-      if (isMyTurn || (currentPlayer?.id.startsWith('bot_') && isAdmin)) {
+      if (didTransition && (isMyTurn || (currentPlayer?.id.startsWith('bot_') && isAdmin))) {
         pushState({
           phase: 'choosing',
           playerOrder,

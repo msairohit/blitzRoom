@@ -12,7 +12,8 @@ const firebaseConfig = {
   storageBucket: "blitzroom-859c1.firebasestorage.app",
   messagingSenderId: "25519471303",
   appId: "1:25519471303:web:a37cfb2d29fbe765a15ce2",
-  measurementId: "G-0VWDTLB4E5"
+  measurementId: "G-0VWDTLB4E5",
+  databaseURL: "https://blitzroom-859c1-default-rtdb.asia-southeast1.firebasedatabase.app"
 };
 
 // Initialize Firebase

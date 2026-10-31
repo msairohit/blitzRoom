@@ -17,6 +17,7 @@ type QuizPhase = 'countdown' | 'question' | 'reveal' | 'scores' | 'finished';
 
 export function QuizGame({
   roomId,
+  roomCode,
   currentPlayerId,
   isAdmin,
   players,
@@ -48,6 +49,7 @@ export function QuizGame({
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pulseAnim = useRef(new RNAnimated.Value(1)).current;
+  const hasSavedHistory = useRef(false);
 
   const currentQuestion = questions[currentQuestionIndex];
 
@@ -167,6 +169,36 @@ export function QuizGame({
       roomService.updatePlayer(roomId, bot.id, { isDone: true }).catch(console.error);
     });
   }, [phase, isAdmin, players, roomId]);
+
+  // Save game history once game finishes
+  useEffect(() => {
+    if (phase !== 'finished' || hasSavedHistory.current) return;
+    const allFinished = players.every((p) => p.isDone);
+    if (!allFinished) return;
+
+    hasSavedHistory.current = true;
+
+    // Calculate rank
+    const sortedScores = [...players].sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+    const myRank = sortedScores.findIndex((p) => p.id === currentPlayerId) + 1;
+    const myCurrentScore = players.find((p) => p.id === currentPlayerId)?.score ?? 0;
+
+    const saveHistory = async () => {
+      try {
+        const { historyService } = await import('@/src/services/historyService');
+        await historyService.saveGameHistory({
+          activityType: 'quiz',
+          roomCode: roomCode,
+          score: myCurrentScore,
+          rank: myRank,
+          totalPlayers: players.length,
+        });
+      } catch (e) {
+        console.error('[QuizGame] Error saving game history:', e);
+      }
+    };
+    saveHistory();
+  }, [phase, players, currentPlayerId, roomCode]);
 
   const handleAnswer = useCallback(
     (index: number) => {
